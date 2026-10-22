@@ -83,7 +83,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           day=$(date -u +%Y-%m-%d)
-          gh release create "places-$day" out/*.sqlite.gz out/regions.json --latest --title "Places of $day" \
+          # Named to the minute: a week's second build, after a fix, is a release of its own and not a clash.
+          gh release create "places-$(date -u +%Y-%m-%d-%H%M)" out/*.sqlite.gz out/regions.json --latest --title "Places of $day" \
             --notes "Each region's places from OpenStreetMap as of $day, for Gavio boxes. © OpenStreetMap contributors, under the Open Database Licence (ODbL 1.0). See the README."
           # The four newest weeks are kept.
           gh release list --limit 100 --json tagName -q '.[].tagName' | grep '^places-' | sort -r | tail -n +5 |
