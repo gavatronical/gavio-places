@@ -1,0 +1,90 @@
+name: weekly
+# Every region's places file from this week's OpenStreetMap, published as a release. A Gavio box downloads
+# https://github.com/gavatronical/gavio-places/releases/latest/download/regions.json and the one file it needs.
+on:
+  schedule:
+    - cron: "17 2 * * 1" # Mondays, 02:17 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 -m unittest -v test_build
+
+  plan:
+    needs: test
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: plan
+        # Twelve batches, every twelfth region in each, so that the large countries are spread across them.
+        run: |
+          python3 build.py regions > regions-list.json
+          python3 -c 'import json; r = [x["id"] for x in json.load(open("regions-list.json"))]; print("shards=" + json.dumps([r[i::12] for i in range(12)]))' >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 6 # Geofabrik's servers are shared: six downloads at a time at most
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
+      # The ids come from Geofabrik's index, so they reach the shell as data, never as part of the script.
+      - env:
+          SHARD: ${{ toJSON(matrix.shard) }}
+        run: |
+          mkdir -p out
+          python3 -c 'import json, os; print("\n".join(json.loads(os.environ["SHARD"])))' | while read -r id; do
+            python3 build.py region "$id" out >/dev/null || echo "::warning::$id could not be built this week"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: places-${{ strategy.job-index }}
+          path: out/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # On even when a batch failed (the count below decides), but not on a push, where nothing was built.
+    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: out
+          pattern: places-*
+          merge-multiple: true
+      - run: python3 build.py index out
+      # A week with nine regions in ten or fewer built is not published: a box keeps last week's file instead.
+      - run: |
+          planned=$(python3 build.py regions | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')
+          built=$(python3 -c 'import json; print(len(json.load(open("out/regions.json"))["regions"]))')
+          echo "built $built of $planned regions"
+          [ $((built * 10)) -gt $((planned * 9)) ]
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          day=$(date -u +%Y-%m-%d)
+          gh release create "places-$day" out/*.sqlite.gz out/regions.json --latest --title "Places of $day" \
+            --notes "Each region's places from OpenStreetMap as of $day, for Gavio boxes. © OpenStreetMap contributors, under the Open Database Licence (ODbL 1.0). See the README."
+          # The four newest weeks are kept.
+          gh release list --limit 100 --json tagName -q '.[].tagName' | grep '^places-' | sort -r | tail -n +5 |
+            while read -r old; do gh release delete "$old" --yes --cleanup-tag; done
