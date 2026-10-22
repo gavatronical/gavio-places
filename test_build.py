@@ -140,3 +140,41 @@ class Regions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Corrections(unittest.TestCase):
+    """Geofabrik's index gives some files no country code, the wrong one, or leaves a country out: checked against the
+    countries of GeoNames' town list on 2026-10-22, 56 countries had no file, and VU was on six files."""
+
+    INDEX = {"features": [
+        {"properties": {"id": "vanuatu", "name": "Vanuatu", "iso3166-1:alpha2": ["VU"], "urls": {"pbf": "v"}}},
+        {"properties": {"id": "american-oceania", "name": "American Oceania", "iso3166-1:alpha2": ["VU"], "urls": {"pbf": "a"}}},
+        {"properties": {"id": "ile-de-clipperton", "name": "Île de Clipperton", "iso3166-1:alpha2": ["VU"], "urls": {"pbf": "c"}}},
+        {"properties": {"id": "gcc-states", "name": "GCC States", "iso3166-1:alpha2": ["QA", "AE", "OM", "BH", "KW"], "urls": {"pbf": "g"}}},
+        {"properties": {"id": "hong-kong", "name": "Hong Kong", "urls": {"pbf": "h"}}},
+        {"properties": {"id": "us/new-york", "name": "us/new-york", "iso3166-2": ["US-NY"], "urls": {"pbf": "n"}}},
+        {"properties": {"id": "us/district-of-columbia", "iso3166-2": ["US-DC"], "urls": {"pbf": "d"}}},
+    ]}  # fmt: skip
+
+    def test_a_country_is_on_its_own_file_and_not_on_others_geofabrik_gave_it_to(self):
+        chosen = {r["id"]: r for r in build.regions(self.INDEX)}
+        self.assertEqual(chosen["vanuatu"]["countries"], ["VU"])
+        self.assertEqual(chosen["american-oceania"]["countries"], ["AS", "GU", "MP", "UM"])
+        self.assertNotIn("ile-de-clipperton", chosen)  # nobody lives there
+        self.assertEqual([i for i, r in chosen.items() if "VU" in r["countries"]], ["vanuatu"])
+
+    def test_a_country_geofabrik_left_out_is_on_the_file_that_holds_it(self):
+        chosen = {r["id"]: r for r in build.regions(self.INDEX)}
+        self.assertIn("SA", chosen["gcc-states"]["countries"])
+        self.assertEqual(chosen["hong-kong"]["countries"], ["HK"])
+
+    def test_a_us_state_is_called_by_its_name(self):
+        chosen = {r["id"]: r for r in build.regions(self.INDEX)}
+        self.assertEqual(chosen["us/new-york"]["name"], "New York")
+        self.assertEqual(chosen["us/district-of-columbia"]["name"], "District of Columbia")
+
+    def test_every_correction_names_real_country_codes(self):
+        for region_id, codes in build.COUNTRIES.items():
+            self.assertTrue(all(len(c) == 2 and c.isupper() for c in codes), region_id)
+        self.assertEqual(len({c for codes in build.COUNTRIES.values() for c in codes}), sum(len(c) for c in build.COUNTRIES.values()),
+                         "a country named for two corrected files")  # fmt: skip

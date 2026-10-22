@@ -137,6 +137,57 @@ def write(found: list[tuple[str, float, float, str]], path: Path, about: dict) -
     return {"file": path.name, "places": len(found), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+# The countries a file holds, where Geofabrik's index says otherwise. Checked on 2026-10-22 against the countries of
+# GeoNames' town list, which Gavio boxes find their towns in: 56 of them were on no file (among them Hong Kong, Saudi
+# Arabia, Singapore, Kosovo, the French overseas departments and the Channel Islands, most of which Geofabrik has a
+# file for, with no country code on it), and VU was on six files and MH on two. A file named here with no countries is
+# left out. A box asks a map service for a town its file turns out not to cover, so a country put on a larger file
+# that may not reach it (the Lesser Antilles on Central America's) costs a download and nothing worse.
+COUNTRIES = {
+    "american-oceania": ["AS", "GU", "MP", "UM"],
+    "ile-de-clipperton": [],
+    "polynesie-francaise": ["PF"],
+    "tokelau": ["TK"],
+    "wallis-et-futuna": ["WF"],
+    "pitcairn-islands": ["PN"],
+    "gcc-states": ["AE", "BH", "KW", "OM", "QA", "SA"],
+    "malaysia-singapore-brunei": ["BN", "MY", "SG"],
+    "hong-kong": ["HK"],
+    "macau": ["MO"],
+    "kosovo": ["XK"],
+    "comores": ["KM"],
+    "guadeloupe": ["GP"],
+    "martinique": ["MQ"],
+    "mayotte": ["YT"],
+    "reunion": ["RE"],
+    "guernsey-jersey": ["GG", "JE"],
+    "isle-of-man": ["IM"],
+    "bermuda": ["BM"],
+    "falklands": ["FK"],
+    "christmas-island": ["CX"],
+    "cocos-islands": ["CC"],
+    "norfolk-island": ["NF"],
+    "svalbard-janmayen": ["SJ"],
+    "finland": ["AX", "FI"],
+    "italy": ["IT", "SM", "VA"],
+    "morocco": ["EH", "MA"],
+    "central-america": ["AG", "AI", "AW", "BB", "BL", "BQ", "CW", "DM", "GD", "KN", "KY", "LC", "MF", "MS", "SX", "TC", "TT",
+                        "VC", "VG"],
+}
+SMALL_WORDS = {"of", "and", "the"}
+
+
+def name_of(props: dict) -> str:
+    """A file's name for a person. Geofabrik gives its US states none, or their id ("us/new-york"): those are made
+    from the id ("New York", "District of Columbia")."""
+    name = props.get("name") or ""
+    if name and "/" not in name:
+        return name
+    words = props["id"].rsplit("/", 1)[-1].split("-")
+    named = " ".join(w if i and w in SMALL_WORDS else w.capitalize() for i, w in enumerate(words))
+    return named.replace("Us ", "US ")
+
+
 def file_name(region_id: str) -> str:
     """us/california is us-california.sqlite.gz."""
     return region_id.replace("/", "-") + ".sqlite.gz"
@@ -148,10 +199,10 @@ def regions(index: dict) -> list[dict]:
     chosen = []
     for feature in index.get("features", []):
         props = feature.get("properties", {})
-        countries = props.get("iso3166-1:alpha2") or []
+        countries = COUNTRIES.get(props.get("id"), props.get("iso3166-1:alpha2") or [])
         states = [code for code in props.get("iso3166-2") or [] if code.startswith("US-")]
         if (countries and props.get("id") != "us") or states:
-            chosen.append({"id": props["id"], "name": props.get("name", props["id"]), "countries": sorted(countries),
+            chosen.append({"id": props["id"], "name": name_of(props), "countries": sorted(countries),
                            "subdivisions": sorted(states), "pbf": props["urls"]["pbf"]})  # fmt: skip
     return sorted(chosen, key=lambda region: region["id"])
 
