@@ -176,6 +176,13 @@ COUNTRIES = {
     "central-america": ["AG", "AI", "AW", "BB", "BL", "BQ", "CW", "DM", "GD", "KN", "KY", "LC", "MF", "MS", "SX", "TC", "TT",
                         "VC", "VG"],
 }
+# Files for places a country's file leaves out, named by the town list's own code for them (GeoNames' first level of
+# divisions, as a box asks for its file). The Canary Islands are in no part of Spain's file, and a box there asked a map
+# service every question (the review of 2026-10-23). Checked on 2026-10-23 for every town in the list against the file
+# it gets: no other region's towns are mostly outside theirs, but where the map itself has little (inland Angola,
+# Afghanistan), and Geofabrik's files for the Azores, Madeira, Ceuta and Melilla are parts of what Portugal's and
+# Spain's already hold.
+SUBDIVISIONS = {"canary-islands": ["ES-53"]}
 SMALL_WORDS = {"of", "and", "the"}
 
 
@@ -202,7 +209,7 @@ def regions(index: dict) -> list[dict]:
     for feature in index.get("features", []):
         props = feature.get("properties", {})
         countries = COUNTRIES.get(props.get("id"), props.get("iso3166-1:alpha2") or [])
-        states = [code for code in props.get("iso3166-2") or [] if code.startswith("US-")]
+        states = [code for code in props.get("iso3166-2") or [] if code.startswith("US-")] + SUBDIVISIONS.get(props.get("id"), [])
         if (countries and props.get("id") != "us") or states:
             chosen.append({"id": props["id"], "name": name_of(props), "countries": sorted(countries),
                            "subdivisions": sorted(states), "pbf": props["urls"]["pbf"]})  # fmt: skip

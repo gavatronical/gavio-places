@@ -16,7 +16,8 @@ The four newest weeks are kept.
 
 A town near a border has shops on the other side as near as its own, so each file also holds the places of the files
 beside it that are within about 4 km of its own places: North Dakota's has Moorhead's, over the river in Minnesota,
-for Fargo. A place is in a file once.
+for Fargo. A place is in a file once. Places that a country's file leaves out have a file of their own, found by the
+code GeoNames gives them (the town list a box finds its town in): the Canary Islands (ES-53).
 
 A region's file (`germany.sqlite.gz`, `us-california.sqlite.gz`) is an SQLite database, gzipped:
 

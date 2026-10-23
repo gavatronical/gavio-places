@@ -6,6 +6,7 @@
 import gzip
 import hashlib
 import json
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -246,6 +247,22 @@ class Beside(unittest.TestCase):
         here = build.cell(64.0, 10.0)
         self.assertIn(build.cell(64.0, 10.0 + 0.08), build.around({here}))  # 3.9 km east at 64° north
         self.assertNotIn(build.cell(64.0 + 0.1, 10.0), build.around({here}))  # 11 km north
+
+
+class Islands(unittest.TestCase):
+    """The Canary Islands are in no part of Spain's file: a box there asked a map service every question. They have
+    a file of their own, found by the town list's own code for them."""
+
+    def test_an_island_file_is_found_by_its_code_and_holds_no_whole_country(self):
+        index = {"features": [{"properties": {"id": "canary-islands", "name": "Canary Islands", "urls": {"pbf": "c"}}},
+                              {"properties": {"id": "spain", "name": "Spain", "iso3166-1:alpha2": ["ES"], "urls": {"pbf": "s"}}}]}  # fmt: skip
+        chosen = {r["id"]: r for r in build.regions(index)}
+        self.assertEqual((chosen["canary-islands"]["countries"], chosen["canary-islands"]["subdivisions"]), ([], ["ES-53"]))
+        self.assertEqual(chosen["spain"]["countries"], ["ES"])
+
+    def test_every_island_code_is_a_country_and_a_region_of_it(self):
+        for region_id, codes in build.SUBDIVISIONS.items():
+            self.assertTrue(all(re.fullmatch(r"[A-Z]{2}-[A-Z0-9]{1,8}", c) for c in codes), region_id)
 
 
 if __name__ == "__main__":
