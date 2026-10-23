@@ -72,6 +72,8 @@ jobs:
           path: out
           pattern: places-*
           merge-multiple: true
+      # Each file given the places within about 4 km over its borders, from the files as built (build.py beside).
+      - run: python3 build.py beside out
       - run: python3 build.py index out
       # A week with nine regions in ten or fewer built is not published: a box keeps last week's file instead.
       - run: |

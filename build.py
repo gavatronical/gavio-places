@@ -5,6 +5,7 @@ answers "is there a pharmacy open near me?" from it, asking no map server.
 
     python3 build.py regions                    the regions built, from Geofabrik's index, as JSON
     python3 build.py region <id> <folder>       one region: downloaded, filtered, written as <file>.sqlite.gz
+    python3 build.py beside <folder>            each file given the places beside it over its borders (see beside)
     python3 build.py index <folder>             regions.json, for every region written to <folder>
 
 Needs osmium-tool and curl, and Python's standard library. The extracts come from Geofabrik (download.geofabrik.de),
@@ -22,6 +23,7 @@ import datetime
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -241,6 +243,94 @@ def region(region_id: str, folder: Path) -> dict:
     return said
 
 
+# Places over a border. A box's file is its country's or its US state's, and a town near the edge has shops on the
+# other side as near as its own: Fargo's hardware stores are in Moorhead, Minnesota, and North Dakota's file had none
+# of them, so a box in Fargo said there were none (the review of 2026-10-23). Each file is given the places of the
+# files beside it that lie within about 4 km of its own, once each: a box asks for 3 km round its town's position,
+# which is rounded to about a kilometre.
+CELL = 0.04  # degrees: about 4.4 km of latitude
+
+
+def cell(lat: float, lon: float) -> int:
+    """A place's square of CELL degrees, as one number."""
+    return (math.floor(lat / CELL) + 10_000) * 100_000 + math.floor(lon / CELL) + 50_000
+
+
+def around(cells: set[int]) -> set[int]:
+    """Every square within about 4 km of one of these: one row north and south, and east and west as many as make
+    4 km at that latitude (more nearer the poles, where a degree of longitude is shorter)."""
+    out = set()
+    for key in cells:
+        band, col = divmod(key, 100_000)
+        wide = math.ceil(1 / max(math.cos(math.radians((band - 10_000 + 0.5) * CELL)), 0.1))
+        out.update((band + db) * 100_000 + col + dc for db in (-1, 0, 1) for dc in range(-wide, wide + 1))
+    return out
+
+
+def bounds(cells: set[int]) -> tuple[int, int, int, int]:
+    """The rows and columns of squares a set of them spans."""
+    bands, cols = [key // 100_000 for key in cells], [key % 100_000 for key in cells]
+    return min(bands), max(bands), min(cols), max(cols)
+
+
+def beside(folder: Path) -> dict[str, list[str]]:
+    """Gives each region's file in folder the places of the files beside it within about 4 km of its own (read from
+    the files as built, not as given), sorted with its own and each once; and says, in the file and in what regions.json
+    will say of it, which files gave some. Returns those, by region."""
+    said = {p.name.removesuffix(".sqlite.gz.json"): json.loads(p.read_text()) for p in sorted(folder.glob("*.sqlite.gz.json"))}
+    given: dict[str, list[str]] = {}
+    with tempfile.TemporaryDirectory(dir=folder) as work:
+        built, cells = {}, {}
+        for name, region in said.items():  # each file as built, and the squares its places are in
+            built[name] = Path(work) / f"{name}.sqlite"
+            with gzip.open(folder / region["file"], "rb") as packed, built[name].open("wb") as raw:
+                shutil.copyfileobj(packed, raw)
+            con = sqlite3.connect(built[name])
+            cells[name] = {cell(lat, lon) for lat, lon in con.execute("SELECT lat, lon FROM places")}
+            con.close()
+        spans = {name: bounds(found) for name, found in cells.items() if found}
+        extra: dict[str, list[tuple]] = {}
+        for name in spans:  # all of it read before any file is changed
+            low, high, west, east = spans[name]
+            near = around(cells[name])
+            for other, (o_low, o_high, o_west, o_east) in spans.items():
+                if other == name or o_high < low - 1 or o_low > high + 1 or o_east < west - 10 or o_west > east + 10:
+                    continue
+                if cells[other].isdisjoint(near):
+                    continue
+                con = sqlite3.connect(f"file:{built[other]}?mode=ro", uri=True)
+                hits = [rowid for rowid, lat, lon in con.execute("SELECT rowid, lat, lon FROM places") if cell(lat, lon) in near]
+                rows = []
+                for at in range(0, len(hits), 500):
+                    part = hits[at : at + 500]
+                    rows += con.execute(f"SELECT kind, lat, lon, tags FROM places WHERE rowid IN ({','.join('?' * len(part))})", part).fetchall()
+                con.close()
+                if rows:
+                    extra.setdefault(name, []).extend(rows)
+                    given.setdefault(name, []).append(said[other]["id"])
+        for name, rows in extra.items():
+            con = sqlite3.connect(built[name])
+            with con:
+                con.executemany("INSERT INTO places VALUES (?, ?, ?, ?)", rows)
+                con.execute("CREATE TABLE once (kind TEXT NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, tags TEXT NOT NULL)")
+                con.execute("INSERT INTO once SELECT DISTINCT kind, lat, lon, tags FROM places ORDER BY kind, lat, lon, tags")
+                con.execute("DROP TABLE places")
+                con.execute("ALTER TABLE once RENAME TO places")
+                con.execute("CREATE INDEX near ON places (kind, lat)")
+                con.execute("INSERT OR REPLACE INTO about VALUES ('beside', ?)", (",".join(sorted(given[name])),))
+                places = con.execute("SELECT count(*) FROM places").fetchone()[0]
+            con.execute("VACUUM")
+            con.close()
+            path = folder / said[name]["file"]
+            with built[name].open("rb") as raw, gzip.GzipFile(path, "wb", compresslevel=9, mtime=0) as out:
+                shutil.copyfileobj(raw, out)
+            built[name].unlink()
+            data = path.read_bytes()
+            said[name] |= {"places": places, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "beside": sorted(given[name])}
+            (folder / f"{name}.sqlite.gz.json").write_text(json.dumps(said[name], sort_keys=True) + "\n")
+    return {said[name]["id"]: sorted(ids) for name, ids in given.items()}
+
+
 def index(folder: Path, built: str | None = None) -> dict:
     """regions.json: every region written to the folder, what each file holds and its checksum, and the licence."""
     built = built or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -256,6 +346,9 @@ if __name__ == "__main__":
             print(json.dumps(regions(json.loads(fetch(INDEX))), indent=1))
         case ["region", region_id, folder]:
             print(json.dumps(region(region_id, Path(folder))))
+        case ["beside", folder]:
+            given = beside(Path(folder))
+            print(f"{len(given)} files given places from beside them, from {sum(len(g) for g in given.values())} others")
         case ["index", folder]:
             said = index(Path(folder))
             print(f"{len(said['regions'])} regions, {sum(r['places'] for r in said['regions'])} places")

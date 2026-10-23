@@ -4,6 +4,7 @@
 """
 
 import gzip
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -138,9 +139,6 @@ class Regions(unittest.TestCase):
             self.assertEqual(len(index["kinds"]), 23)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class Corrections(unittest.TestCase):
     """Geofabrik's index gives some files no country code, the wrong one, or leaves a country out: checked against the
@@ -178,3 +176,77 @@ class Corrections(unittest.TestCase):
             self.assertTrue(all(len(c) == 2 and c.isupper() for c in codes), region_id)
         self.assertEqual(len({c for codes in build.COUNTRIES.values() for c in codes}), sum(len(c) for c in build.COUNTRIES.values()),
                          "a country named for two corrected files")  # fmt: skip
+
+
+def region_file(folder: Path, region_id: str, places: list[tuple[float, float, str, str]]) -> None:
+    """A region's file and its sidecar, as build.py region writes them: (lat, lon, amenity, name) for each place."""
+    found = build.rows([feature(point(lon, lat), amenity=kind, name=name) for lat, lon, kind, name in places])
+    said = {"id": region_id, "name": region_id, "countries": [], "subdivisions": [], "data_as_of": "2026-10-20T00:00:00Z"}
+    said |= build.write(found, folder / build.file_name(region_id), {"region": region_id})
+    (folder / (build.file_name(region_id) + ".json")).write_text(json.dumps(said, sort_keys=True) + "\n")
+
+
+def names_in(folder: Path, region_id: str) -> list[str]:
+    raw = folder / "read.sqlite"
+    raw.write_bytes(gzip.decompress((folder / build.file_name(region_id)).read_bytes()))
+    con = sqlite3.connect(raw)
+    names = sorted(json.loads(tags)["name"] for (tags,) in con.execute("SELECT tags FROM places"))
+    con.close()
+    raw.unlink()
+    return names
+
+
+FARGO = (46.877, -96.79, "pharmacy", "Fargo Pharmacy")
+MOORHEAD = (46.874, -96.767, "pharmacy", "Moorhead Pharmacy")  # 1.8 km east, over the Red River in Minnesota
+MINNEAPOLIS = (44.98, -93.27, "cafe", "Minneapolis Cafe")  # 350 km away
+
+
+class Beside(unittest.TestCase):
+    """A town near a border has shops on the other side as near as its own, and the file of its state or country
+    stopped at the line: Fargo's file had none of Moorhead's, so a box in Fargo said there were none."""
+
+    def test_a_file_is_given_the_places_over_its_border_within_four_km_and_no_further(self):
+        with tempfile.TemporaryDirectory() as work:
+            folder = Path(work)
+            region_file(folder, "us/north-dakota", [FARGO])
+            region_file(folder, "us/minnesota", [MOORHEAD, MINNEAPOLIS])
+            self.assertEqual(build.beside(folder), {"us/minnesota": ["us/north-dakota"], "us/north-dakota": ["us/minnesota"]})
+            self.assertEqual(names_in(folder, "us/north-dakota"), ["Fargo Pharmacy", "Moorhead Pharmacy"])
+            self.assertEqual(names_in(folder, "us/minnesota"), ["Fargo Pharmacy", "Minneapolis Cafe", "Moorhead Pharmacy"])
+            said = json.loads((folder / "us-north-dakota.sqlite.gz.json").read_text())
+            data = (folder / "us-north-dakota.sqlite.gz").read_bytes()
+            self.assertEqual((said["places"], said["bytes"], said["beside"]), (2, len(data), ["us/minnesota"]))
+            self.assertEqual(said["sha256"], hashlib.sha256(data).hexdigest())
+
+    def test_a_place_in_both_files_is_kept_once_and_the_same_files_give_the_same_result(self):
+        twice = (14.634, -90.507, "cafe", "Cafe in Guatemala City")
+        shas = []
+        for run in ("one", "two"):
+            with tempfile.TemporaryDirectory() as work:
+                folder = Path(work)
+                region_file(folder, "central-america", [twice, (17.25, -88.77, "cafe", "Cafe in Belmopan")])
+                region_file(folder, "guatemala", [twice])
+                build.beside(folder)
+                self.assertEqual(names_in(folder, "guatemala"), ["Cafe in Guatemala City"])
+                self.assertEqual(names_in(folder, "central-america"), ["Cafe in Belmopan", "Cafe in Guatemala City"])
+                shas.append(json.loads((folder / "guatemala.sqlite.gz.json").read_text())["sha256"])
+        self.assertEqual(shas[0], shas[1])
+
+    def test_a_file_with_nothing_beside_it_is_left_as_it_was(self):
+        with tempfile.TemporaryDirectory() as work:
+            folder = Path(work)
+            region_file(folder, "iceland", [(64.146, -21.94, "cafe", "Reykjavik Cafe")])
+            region_file(folder, "us/minnesota", [MINNEAPOLIS])
+            before = (folder / "iceland.sqlite.gz").read_bytes()
+            self.assertEqual(build.beside(folder), {})
+            self.assertEqual((folder / "iceland.sqlite.gz").read_bytes(), before)
+            self.assertNotIn("beside", json.loads((folder / "iceland.sqlite.gz.json").read_text()))
+
+    def test_four_km_east_and_west_is_more_squares_nearer_the_poles(self):
+        here = build.cell(64.0, 10.0)
+        self.assertIn(build.cell(64.0, 10.0 + 0.08), build.around({here}))  # 3.9 km east at 64° north
+        self.assertNotIn(build.cell(64.0 + 0.1, 10.0), build.around({here}))  # 11 km north
+
+
+if __name__ == "__main__":
+    unittest.main()

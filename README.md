@@ -11,7 +11,12 @@ from it, without asking a map server anything.
 
 Each week's files are a [release](https://github.com/gavatronical/gavio-places/releases/latest). `regions.json` lists
 every region: its Geofabrik name, the countries (ISO 3166-1) or US state (ISO 3166-2) it covers, its file, the
-number of places, its size, its SHA-256 and the date of the map data. The four newest weeks are kept.
+number of places, its size, its SHA-256, the date of the map data, and which files beside it gave it places (below).
+The four newest weeks are kept.
+
+A town near a border has shops on the other side as near as its own, so each file also holds the places of the files
+beside it that are within about 4 km of its own places: North Dakota's has Moorhead's, over the river in Minnesota,
+for Fargo. A place is in a file once.
 
 A region's file (`germany.sqlite.gz`, `us-california.sqlite.gz`) is an SQLite database, gzipped:
 
@@ -25,10 +30,12 @@ A region's file (`germany.sqlite.gz`, `us-california.sqlite.gz`) is an SQLite da
 [`build.py`](build.py), run by [the weekly workflow](.github/workflows/weekly.yml) on Mondays: for each region, the
 extract from [Geofabrik](https://download.geofabrik.de/) is downloaded, filtered to the kinds in `kinds.json` with
 [osmium](https://osmcode.org/osmium-tool/), and written as above. The extracts are fetched one at a time per batch,
-six batches at once at most, and deleted as soon as their places are out of them.
+six batches at once at most, and deleted as soon as their places are out of them. Once every region is built, each
+file is given the places beside it over its borders, from the files as built.
 
     python3 -m unittest -v test_build             the tests (no network)
     python3 build.py region liechtenstein out     one region (needs osmium-tool and curl)
+    python3 build.py beside out                   each file in out/ given the places beside it
     python3 build.py index out                    regions.json for what is in out/
 
 ## What a box's download says about it
